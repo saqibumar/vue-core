@@ -36,13 +36,13 @@ export class EffectScope {
    */
   private index: number | undefined
 
-  constructor(public detached = false) {
-    this.parent = activeEffectScope
-    if (!detached && activeEffectScope) {
-      this.index =
-        (activeEffectScope.scopes || (activeEffectScope.scopes = [])).push(
-          this,
-        ) - 1
+  constructor(
+    public detached = false,
+    parent: EffectScope | undefined = activeEffectScope,
+  ) {
+    this.parent = parent
+    if (!detached && parent) {
+      this.index = (parent.scopes || (parent.scopes = [])).push(this) - 1
     }
   }
 
@@ -99,11 +99,13 @@ export class EffectScope {
     }
   }
 
+  prevScope: EffectScope | undefined
   /**
    * This should only be called on non-detached scopes
    * @internal
    */
   on(): void {
+    this.prevScope = activeEffectScope
     activeEffectScope = this
   }
 
@@ -112,7 +114,7 @@ export class EffectScope {
    * @internal
    */
   off(): void {
-    activeEffectScope = this.parent
+    activeEffectScope = this.prevScope
   }
 
   stop(fromParent?: boolean): void {
