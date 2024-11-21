@@ -1,17 +1,24 @@
-import { isFunction } from '@vue/shared'
+import { hasChanged, isFunction } from '@vue/shared'
+import { ReactiveFlags, TrackOpTypes } from './constants'
+import { onTrack, setupDirtyLevelHandler } from './debug'
+import type { DebuggerEvent, DebuggerOptions } from './effect'
 import {
-  type DebuggerEvent,
-  type DebuggerOptions,
-  EffectFlags,
-  type Subscriber,
+  type Dependency,
+  DirtyLevels,
+  type IComputed,
+  type Link,
   activeSub,
-  batch,
-  refreshComputed,
+  activeTrackId,
+  checkDirty,
+  endTrack,
+  link,
+  propagate,
+  setActiveSub,
+  startTrack,
 } from './effect'
+import { activeEffectScope } from './effectScope'
 import type { Ref } from './ref'
 import { warn } from './warning'
-import { Dep, type Link, globalVersion } from './dep'
-import { ReactiveFlags, TrackOpTypes } from './constants'
 
 declare const ComputedRefSymbol: unique symbol
 declare const WritableComputedRefSymbol: unique symbol
@@ -44,15 +51,22 @@ export interface WritableComputedOptions<T, S = T> {
  * @private exported by @vue/reactivity for Vue core use, but not exported from
  * the main vue package
  */
-export class ComputedRefImpl<T = any> implements Subscriber {
+export class ComputedRefImpl<T = any> implements IComputed {
   /**
    * @internal
    */
-  _value: any = undefined
-  /**
-   * @internal
-   */
-  readonly dep: Dep = new Dep(this)
+  _value: T | undefined = undefined
+
+  // Dependency
+  subs: Link | undefined = undefined
+  subsTail: Link | undefined = undefined
+
+  // Subscriber
+  deps: Link | undefined = undefined
+  depsTail: Link | undefined = undefined
+  trackId = 0
+  dirtyLevel: DirtyLevels = DirtyLevels.Dirty
+
   /**
    * @internal
    */
@@ -63,34 +77,36 @@ export class ComputedRefImpl<T = any> implements Subscriber {
    */
   readonly __v_isReadonly: boolean
   // TODO isolatedDeclarations ReactiveFlags.IS_READONLY
-  // A computed is also a subscriber that tracks other deps
-  /**
-   * @internal
-   */
-  deps?: Link = undefined
-  /**
-   * @internal
-   */
-  depsTail?: Link = undefined
-  /**
-   * @internal
-   */
-  flags: EffectFlags = EffectFlags.DIRTY
-  /**
-   * @internal
-   */
-  globalVersion: number = globalVersion - 1
-  /**
-   * @internal
-   */
-  isSSR: boolean
-  /**
-   * @internal
-   */
-  next?: Subscriber = undefined
 
   // for backwards compat
-  effect: this = this
+  get effect(): this {
+    return this
+  }
+  // for backwards compat
+  get dep(): Dependency {
+    return this
+  }
+  // for backwards compat
+  get _dirty(): boolean {
+    let dirtyLevel = this.dirtyLevel
+    if (dirtyLevel === DirtyLevels.MaybeDirty) {
+      if (checkDirty(this.deps!)) {
+        return true
+      } else {
+        this.dirtyLevel = DirtyLevels.None
+        return false
+      }
+    }
+    return dirtyLevel === DirtyLevels.Dirty
+  }
+  set _dirty(v: boolean) {
+    if (v) {
+      this.dirtyLevel = DirtyLevels.Dirty
+    } else {
+      this.dirtyLevel = DirtyLevels.None
+    }
+  }
+
   // dev only
   onTrack?: (event: DebuggerEvent) => void
   // dev only
@@ -105,43 +121,38 @@ export class ComputedRefImpl<T = any> implements Subscriber {
   constructor(
     public fn: ComputedGetter<T>,
     private readonly setter: ComputedSetter<T> | undefined,
-    isSSR: boolean,
   ) {
     this[ReactiveFlags.IS_READONLY] = !setter
-    this.isSSR = isSSR
-  }
-
-  /**
-   * @internal
-   */
-  notify(): true | void {
-    this.flags |= EffectFlags.DIRTY
-    if (
-      !(this.flags & EffectFlags.NOTIFIED) &&
-      // avoid infinite self recursion
-      activeSub !== this
-    ) {
-      batch(this, true)
-      return true
-    } else if (__DEV__) {
-      // TODO warn
+    if (__DEV__) {
+      setupDirtyLevelHandler(this)
     }
   }
 
   get value(): T {
-    const link = __DEV__
-      ? this.dep.track({
-          target: this,
-          type: TrackOpTypes.GET,
-          key: 'value',
-        })
-      : this.dep.track()
-    refreshComputed(this)
-    // sync version after evaluation
-    if (link) {
-      link.version = this.dep.version
+    if (this._dirty) {
+      if (this.update()) {
+        const subs = this.subs
+        if (subs !== undefined) {
+          propagate(subs)
+        }
+      }
     }
-    return this._value
+    if (activeTrackId !== 0) {
+      const subsTail = this.subsTail
+      if (subsTail === undefined || subsTail.trackId !== activeTrackId) {
+        if (__DEV__) {
+          onTrack(activeSub!, {
+            target: this,
+            type: TrackOpTypes.GET,
+            key: 'value',
+          })
+        }
+        link(this, activeSub!, activeTrackId)
+      }
+    } else if (activeEffectScope !== undefined) {
+      link(this, activeEffectScope, Math.abs(activeEffectScope.trackId))
+    }
+    return this._value!
   }
 
   set value(newValue) {
@@ -150,6 +161,25 @@ export class ComputedRefImpl<T = any> implements Subscriber {
     } else if (__DEV__) {
       warn('Write operation failed: computed value is readonly')
     }
+  }
+
+  update(): boolean {
+    const prevSub = activeSub
+    const prevTrackId = activeTrackId
+    setActiveSub(this, startTrack(this))
+    const oldValue = this._value
+    let newValue: T
+    try {
+      newValue = this.fn(oldValue)
+    } finally {
+      setActiveSub(prevSub, prevTrackId)
+      endTrack(this)
+    }
+    if (hasChanged(oldValue, newValue)) {
+      this._value = newValue
+      return true
+    }
+    return false
   }
 }
 
@@ -209,7 +239,7 @@ export function computed<T>(
     setter = getterOrOptions.set
   }
 
-  const cRef = new ComputedRefImpl(getter, setter, isSSR)
+  const cRef = new ComputedRefImpl(getter, setter)
 
   if (__DEV__ && debugOptions && !isSSR) {
     cRef.onTrack = debugOptions.onTrack

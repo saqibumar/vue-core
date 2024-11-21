@@ -48,12 +48,7 @@ import {
   queueJob,
   queuePostFlushCb,
 } from './scheduler'
-import {
-  EffectFlags,
-  ReactiveEffect,
-  pauseTracking,
-  resetTracking,
-} from '@vue/reactivity'
+import { ReactiveEffect, pauseTracking, resetTracking } from '@vue/reactivity'
 import { updateProps } from './componentProps'
 import { updateSlots } from './componentSlots'
 import { popWarningContext, pushWarningContext, warn } from './warning'
@@ -1558,7 +1553,8 @@ function baseCreateRenderer(
     instance.scope.off()
 
     const update = (instance.update = effect.run.bind(effect))
-    const job: SchedulerJob = (instance.job = effect.runIfDirty.bind(effect))
+    const job: SchedulerJob = (instance.job = () =>
+      effect.dirty && effect.run())
     job.i = instance
     job.id = instance.uid
     effect.scheduler = () => queueJob(job)
@@ -2423,10 +2419,10 @@ function toggleRecurse(
   allowed: boolean,
 ) {
   if (allowed) {
-    effect.flags |= EffectFlags.ALLOW_RECURSE
+    effect.allowRecurse = true
     job.flags! |= SchedulerJobFlags.ALLOW_RECURSE
   } else {
-    effect.flags &= ~EffectFlags.ALLOW_RECURSE
+    effect.allowRecurse = false
     job.flags! &= ~SchedulerJobFlags.ALLOW_RECURSE
   }
 }

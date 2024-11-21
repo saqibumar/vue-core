@@ -1,13 +1,23 @@
-import type { ReactiveEffect } from './effect'
+import {
+  DirtyLevels,
+  type Link,
+  PauseLevels,
+  type ReactiveEffect,
+  type Subscriber,
+  clearTrack,
+  nextTrackId,
+} from './effect'
 import { warn } from './warning'
 
 export let activeEffectScope: EffectScope | undefined
 
-export class EffectScope {
-  /**
-   * @internal
-   */
-  private _active = true
+export class EffectScope implements Subscriber {
+  // Subscriber: In order to collect orphans computeds
+  deps: Link | undefined = undefined
+  depsTail: Link | undefined = undefined
+  trackId: number = nextTrackId()
+  dirtyLevel: DirtyLevels = DirtyLevels.Dirty
+
   /**
    * @internal
    */
@@ -17,7 +27,7 @@ export class EffectScope {
    */
   cleanups: (() => void)[] = []
 
-  private _isPaused = false
+  private pauseLevel: PauseLevels = PauseLevels.None
 
   /**
    * only assigned by undetached scope
@@ -47,12 +57,12 @@ export class EffectScope {
   }
 
   get active(): boolean {
-    return this._active
+    return this.pauseLevel !== PauseLevels.Stop
   }
 
   pause(): void {
-    if (this._active) {
-      this._isPaused = true
+    if (this.pauseLevel === PauseLevels.None) {
+      this.pauseLevel = PauseLevels.Paused
       let i, l
       if (this.scopes) {
         for (i = 0, l = this.scopes.length; i < l; i++) {
@@ -69,24 +79,22 @@ export class EffectScope {
    * Resumes the effect scope, including all child scopes and effects.
    */
   resume(): void {
-    if (this._active) {
-      if (this._isPaused) {
-        this._isPaused = false
-        let i, l
-        if (this.scopes) {
-          for (i = 0, l = this.scopes.length; i < l; i++) {
-            this.scopes[i].resume()
-          }
+    if (this.pauseLevel === PauseLevels.Paused) {
+      this.pauseLevel = PauseLevels.None
+      let i, l
+      if (this.scopes) {
+        for (i = 0, l = this.scopes.length; i < l; i++) {
+          this.scopes[i].resume()
         }
-        for (i = 0, l = this.effects.length; i < l; i++) {
-          this.effects[i].resume()
-        }
+      }
+      for (i = 0, l = this.effects.length; i < l; i++) {
+        this.effects[i].resume()
       }
     }
   }
 
   run<T>(fn: () => T): T | undefined {
-    if (this._active) {
+    if (this.active) {
       const currentEffectScope = activeEffectScope
       try {
         activeEffectScope = this
@@ -116,8 +124,13 @@ export class EffectScope {
   }
 
   stop(fromParent?: boolean): void {
-    if (this._active) {
-      this._active = false
+    if (this.active) {
+      this.pauseLevel = PauseLevels.Stop
+      if (this.deps !== undefined) {
+        clearTrack(this.deps)
+        this.deps = undefined
+        this.depsTail = undefined
+      }
       let i, l
       for (i = 0, l = this.effects.length; i < l; i++) {
         this.effects[i].stop()

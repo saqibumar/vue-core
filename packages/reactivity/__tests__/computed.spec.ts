@@ -25,8 +25,8 @@ import {
   toRaw,
   triggerRef,
 } from '../src'
-import { EffectFlags, pauseTracking, resetTracking } from '../src/effect'
 import type { ComputedRef, ComputedRefImpl } from '../src/computed'
+import { DirtyLevels, pauseTracking, resetTracking } from '../src/effect'
 
 describe('reactivity/computed', () => {
   it('should return updated value', () => {
@@ -409,9 +409,9 @@ describe('reactivity/computed', () => {
     a.value++
     e.value
 
-    expect(e.deps!.dep).toBe(b.dep)
-    expect(e.deps!.nextDep!.dep).toBe(d.dep)
-    expect(e.deps!.nextDep!.nextDep!.dep).toBe(c.dep)
+    expect(e.deps!.dep).toBe(b)
+    expect(e.deps!.nextDep!.dep).toBe(d)
+    expect(e.deps!.nextDep!.nextDep!.dep).toBe(c)
     expect(cSpy).toHaveBeenCalledTimes(2)
 
     a.value++
@@ -466,8 +466,8 @@ describe('reactivity/computed', () => {
     const c2 = computed(() => c1.value) as unknown as ComputedRefImpl
 
     c2.value
-    expect(c1.flags & EffectFlags.DIRTY).toBeFalsy()
-    expect(c2.flags & EffectFlags.DIRTY).toBeFalsy()
+    expect(c1.dirtyLevel).toBe(DirtyLevels.None)
+    expect(c2.dirtyLevel).toBe(DirtyLevels.None)
   })
 
   it('should chained computeds dirtyLevel update with first computed effect', () => {

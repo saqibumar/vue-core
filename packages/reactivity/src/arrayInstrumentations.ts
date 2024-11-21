@@ -1,8 +1,8 @@
+import { isArray } from '@vue/shared'
 import { TrackOpTypes } from './constants'
+import { ARRAY_ITERATE_KEY, track } from './dep'
 import { endBatch, pauseTracking, resetTracking, startBatch } from './effect'
 import { isProxy, isShallow, toRaw, toReactive } from './reactive'
-import { ARRAY_ITERATE_KEY, track } from './dep'
-import { isArray } from '@vue/shared'
 
 /**
  * Track array iteration and return:
